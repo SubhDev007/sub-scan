@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Html5Qrcode } from 'html5-qrcode'
 import './App.css'
 
@@ -16,6 +16,7 @@ function App() {
   const html5QrCodeRef = useRef(null)
   const lastScanRef = useRef({ code: null, timestamp: 0 })
   const scannedCodesRef = useRef(new Set()) // Track all scanned QR codes
+  const wasScanningRef = useRef(false) // Track if scanner was running before page went to background
   const DEBOUNCE_TIME = 2000 // 2 seconds debounce
 
   // Calculate responsive QR box size
@@ -152,6 +153,9 @@ function App() {
       // Initialize audio context after user interaction
       initAudioContext()
       
+      // Small delay to ensure camera is fully released before html5-qrcode accesses it
+      await new Promise(resolve => setTimeout(resolve, 300))
+      
       // Now start the actual scanner
       await startScanner()
       
@@ -182,10 +186,15 @@ function App() {
         throw new Error("Scanner container not found. Please refresh the page.")
       }
 
+      // Clear any existing content in reader to avoid conflicts
+      readerElement.innerHTML = ''
+      console.log("Reader element cleared and ready")
+
       const html5QrCode = new Html5Qrcode("reader")
       html5QrCodeRef.current = html5QrCode
 
       const qrBoxSize = getQrBoxSize()
+      console.log("QR box size calculated:", qrBoxSize)
 
       // Try with simplified config first (better for mobile)
       const config = {
@@ -196,31 +205,70 @@ function App() {
         // Remove videoConstraints for better mobile compatibility
       }
 
-      // Try back camera first, fallback to any camera
-      let cameraId = { facingMode: "environment" }
-      
+      // Try back camera first - html5-qrcode accepts string or object
       console.log("Starting QR scanner with config:", config)
-      console.log("Camera ID:", cameraId)
       
-      await html5QrCode.start(
-        cameraId,
-        config,
-        (decodedText, decodedResult) => {
-          console.log("QR Code detected:", decodedText)
-          handleScanSuccess(decodedText, decodedResult)
-        },
-        (errorMessage) => {
-          // Ignore scanning errors, just continue
-          // Only log if it's not the common "NotFoundException" which is normal
-          if (!errorMessage.includes("NotFoundException")) {
-            console.log("Scan error (ignored):", errorMessage)
+      // Small delay to ensure DOM is ready
+      await new Promise(resolve => setTimeout(resolve, 100))
+      
+      try {
+        // Try with object format first (back camera)
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          (decodedText, decodedResult) => {
+            console.log("QR Code detected:", decodedText)
+            handleScanSuccess(decodedText, decodedResult)
+          },
+          (errorMessage) => {
+            // Ignore scanning errors, just continue
+            if (!errorMessage.includes("NotFoundException")) {
+              console.log("Scan error (ignored):", errorMessage)
+            }
           }
+        )
+        console.log("QR scanner started successfully with back camera")
+      } catch (backCameraError) {
+        console.log("Back camera failed, trying any camera:", backCameraError)
+        // Fallback: try with string format or any camera
+        try {
+          await html5QrCode.start(
+            "environment", // String format
+            config,
+            (decodedText, decodedResult) => {
+              console.log("QR Code detected:", decodedText)
+              handleScanSuccess(decodedText, decodedResult)
+            },
+            (errorMessage) => {
+              if (!errorMessage.includes("NotFoundException")) {
+                console.log("Scan error (ignored):", errorMessage)
+              }
+            }
+          )
+          console.log("QR scanner started with string format")
+        } catch (stringError) {
+          // Last resort: try user-facing camera or any available
+          console.log("Environment camera failed, trying user camera:", stringError)
+          await html5QrCode.start(
+            { facingMode: "user" },
+            config,
+            (decodedText, decodedResult) => {
+              console.log("QR Code detected:", decodedText)
+              handleScanSuccess(decodedText, decodedResult)
+            },
+            (errorMessage) => {
+              if (!errorMessage.includes("NotFoundException")) {
+                console.log("Scan error (ignored):", errorMessage)
+              }
+            }
+          )
+          console.log("QR scanner started with user camera")
         }
-      )
+      }
       
-      console.log("QR scanner started successfully")
       setIsScanning(true)
       setIsInitializing(false)
+      wasScanningRef.current = true // Mark that scanner was running
       
       // Verify video element exists after a short delay
       setTimeout(() => {
@@ -228,10 +276,22 @@ function App() {
         if (video) {
           console.log("Video element found:", video)
           console.log("Video dimensions:", video.videoWidth, "x", video.videoHeight)
+          // Check if video is actually playing
+          if (video.readyState >= 2) {
+            console.log("Video is playing")
+          } else {
+            console.warn("Video element exists but not playing yet")
+          }
         } else {
           console.warn("Video element not found in #reader")
+          // Try to find it in different locations
+          const allVideos = document.querySelectorAll("video")
+          console.log("Found video elements:", allVideos.length)
+          if (allVideos.length > 0) {
+            console.log("Video found elsewhere, checking...")
+          }
         }
-      }, 1000)
+      }, 1500)
     } catch (err) {
       console.error("Scanner error:", err)
       setError(err.message || "Failed to start camera. Please check permissions.")
@@ -262,10 +322,64 @@ function App() {
         html5QrCodeRef.current = null
       }
       setIsScanning(false)
+      wasScanningRef.current = false // Mark that scanner is stopped
     } catch (err) {
       console.error("Error stopping scanner:", err)
+      wasScanningRef.current = false
     }
   }
+
+  // Check if camera is actually working
+  const checkCameraWorking = () => {
+    const video = document.querySelector("#reader video")
+    if (video) {
+      // Check if video is playing
+      return video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0
+    }
+    return false
+  }
+
+  // Restart scanner if it was running before
+  // Restart scanner if it was running before (wrapped in useCallback to access latest state)
+  const restartScannerIfNeeded = useCallback(async () => {
+    // Only restart if:
+    // 1. Scanner was running before
+    // 2. Permission is granted
+    // 3. Scanner is not currently running or camera is not working
+    if (wasScanningRef.current && permissionStatus === 'granted') {
+      const isWorking = checkCameraWorking()
+      
+      if (!isScanning || !isWorking) {
+        console.log("Page became visible - restarting camera scanner...")
+        setIsInitializing(true)
+        setError(null)
+        
+        try {
+          // Stop any existing scanner first
+          if (html5QrCodeRef.current) {
+            try {
+              await html5QrCodeRef.current.stop()
+              await html5QrCodeRef.current.clear()
+            } catch (e) {
+              console.log("Error cleaning up old scanner:", e)
+            }
+            html5QrCodeRef.current = null
+          }
+          
+          // Small delay before restarting
+          await new Promise(resolve => setTimeout(resolve, 500))
+          
+          // Restart the scanner
+          await startScanner()
+        } catch (err) {
+          console.error("Error restarting scanner:", err)
+          setError("Camera lost connection. Please refresh the page.")
+          setIsInitializing(false)
+          wasScanningRef.current = false
+        }
+      }
+    }
+  }, [isScanning, permissionStatus])
 
   const handleScanSuccess = (decodedText, decodedResult) => {
     const now = Date.now()
@@ -367,6 +481,54 @@ function App() {
     checkPermission()
   }, [])
 
+  // Handle page visibility changes (when phone wakes up)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log("Page became visible")
+        // Small delay to ensure page is fully active
+        setTimeout(() => {
+          restartScannerIfNeeded()
+        }, 300)
+      } else if (document.visibilityState === 'hidden') {
+        console.log("Page became hidden")
+        // Remember that scanner was running
+        wasScanningRef.current = isScanning
+      }
+    }
+
+    const handleFocus = () => {
+      console.log("Window focused")
+      setTimeout(() => {
+        restartScannerIfNeeded()
+      }, 300)
+    }
+
+    const handlePageShow = (event) => {
+      if (event.persisted) {
+        console.log("Page restored from cache")
+        setTimeout(() => {
+          restartScannerIfNeeded()
+        }, 300)
+      }
+    }
+
+    // Listen for visibility changes
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    
+    // Also listen for focus events (when user switches back to tab)
+    window.addEventListener('focus', handleFocus)
+
+    // Listen for page show event (when page is restored from back/forward cache)
+    window.addEventListener('pageshow', handlePageShow)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('pageshow', handlePageShow)
+    }
+  }, [isScanning, permissionStatus, restartScannerIfNeeded])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -416,7 +578,8 @@ function App() {
         {isInitializing && (
           <div className="loading-message">
             <div className="spinner"></div>
-            <p>Requesting camera permission...</p>
+            <p>Starting camera...</p>
+            <p className="loading-hint">Please wait while we initialize the camera</p>
           </div>
         )}
         {error && (
