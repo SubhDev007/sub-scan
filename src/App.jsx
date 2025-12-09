@@ -438,6 +438,50 @@ function App() {
     }
   }
 
+  // Auto-start scanner if permission is already granted
+  const autoStartIfPermissionGranted = async () => {
+    try {
+      // Check if we're in a secure context
+      const secure = checkSecureContext()
+      if (!secure) {
+        console.log("Not in secure context, cannot auto-start")
+        return
+      }
+
+      // Check if camera is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.log("Camera not supported")
+        return
+      }
+
+      // Try to access camera (this will work if permission is granted)
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: "environment" } 
+        })
+        // Permission is granted - stop test stream and start scanner
+        stream.getTracks().forEach(track => track.stop())
+        
+        console.log("Permission already granted - auto-starting camera...")
+        setShowPermissionPrompt(false)
+        setPermissionStatus('granted')
+        initAudioContext()
+        
+        // Small delay before starting scanner
+        await new Promise(resolve => setTimeout(resolve, 300))
+        await startScanner()
+      } catch (err) {
+        // Permission not granted or camera not available
+        console.log("Cannot auto-start:", err.name)
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          setPermissionStatus('denied')
+        }
+      }
+    } catch (err) {
+      console.log("Error in auto-start:", err)
+    }
+  }
+
   // Check secure context and permission status on mount
   useEffect(() => {
     // Check secure context first
@@ -450,9 +494,13 @@ function App() {
           const state = result.state
           setPermissionStatus(state) // 'granted', 'denied', or 'prompt'
           
-          // If permission already granted, don't show prompt
+          // If permission already granted, auto-start scanner
           if (state === 'granted') {
             setShowPermissionPrompt(false)
+            // Auto-start after a small delay to ensure DOM is ready
+            setTimeout(() => {
+              autoStartIfPermissionGranted()
+            }, 500)
           }
           
           result.onchange = () => {
@@ -460,21 +508,25 @@ function App() {
             setPermissionStatus(newState)
             if (newState === 'granted') {
               setShowPermissionPrompt(false)
+              // Auto-start when permission changes to granted
+              setTimeout(() => {
+                autoStartIfPermissionGranted()
+              }, 500)
             }
           }
+        } else {
+          // Permission API not supported - try to auto-start anyway
+          console.log("Permission API not supported, attempting auto-start...")
+          setTimeout(() => {
+            autoStartIfPermissionGranted()
+          }, 1000)
         }
       } catch (err) {
-        console.log("Permission API not supported, will request on user action")
-        // Try to check by attempting to query devices (non-intrusive)
-        try {
-          const devices = await navigator.mediaDevices.enumerateDevices()
-          const hasVideoInput = devices.some(device => device.kind === 'videoinput')
-          if (!hasVideoInput) {
-            console.log("No video input devices found")
-          }
-        } catch (e) {
-          console.log("Cannot enumerate devices")
-        }
+        console.log("Permission check error, attempting auto-start:", err)
+        // Try to auto-start anyway
+        setTimeout(() => {
+          autoStartIfPermissionGranted()
+        }, 1000)
       }
     }
     
