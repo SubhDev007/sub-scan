@@ -355,6 +355,10 @@
   border-bottom: 2px solid #44ff44;
 }
 
+.scan-result-duplicate .result-header {
+  border-bottom: 2px solid #ff9800;
+}
+
 .success-icon {
   width: 40px;
   height: 40px;
@@ -366,6 +370,39 @@
   justify-content: center;
   font-size: 1.5rem;
   font-weight: bold;
+  animation: pulseSuccess 0.5s ease-out;
+}
+
+.error-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #ff9800;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: bold;
+  animation: pulseError 0.5s ease-out;
+}
+
+@keyframes pulseSuccess {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+}
+
+@keyframes pulseError {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2) rotate(5deg);
+  }
 }
 
 .result-header h2 {
@@ -405,6 +442,31 @@
   padding: 0.5rem;
   border-radius: 5px;
   font-weight: 600;
+}
+
+.scan-result-success {
+  background: rgba(255, 255, 255, 0.95);
+  border-left: 4px solid #44ff44;
+}
+
+.scan-result-duplicate {
+  background: rgba(255, 248, 220, 0.95);
+  border-left: 4px solid #ff9800;
+}
+
+.duplicate-warning {
+  background: rgba(255, 193, 7, 0.2);
+  border: 1px solid #ff9800;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.duplicate-warning p {
+  color: #ff6f00;
+  font-weight: 600;
+  margin: 0;
+  font-size: 0.95rem;
 }
 
 .controls {
@@ -498,6 +560,23 @@
   font-family: 'Courier New', monospace;
   flex: 1;
   text-align: right;
+}
+
+.history-duplicate {
+  background: rgba(255, 193, 7, 0.2) !important;
+  border-left: 3px solid #ff9800;
+}
+
+.history-badge {
+  background: #ff9800;
+  color: white;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 10px;
+  font-weight: 600;
+  margin-left: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 /* Mobile optimizations */

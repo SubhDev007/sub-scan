@@ -5,6 +5,7 @@ import './App.css'
 function App() {
   const [isScanning, setIsScanning] = useState(false)
   const [scannedData, setScannedData] = useState(null)
+  const [scanStatus, setScanStatus] = useState(null) // 'success', 'duplicate', null
   const [scanHistory, setScanHistory] = useState([])
   const [error, setError] = useState(null)
   const [isInitializing, setIsInitializing] = useState(false)
@@ -14,6 +15,7 @@ function App() {
   const scannerRef = useRef(null)
   const html5QrCodeRef = useRef(null)
   const lastScanRef = useRef({ code: null, timestamp: 0 })
+  const scannedCodesRef = useRef(new Set()) // Track all scanned QR codes
   const DEBOUNCE_TIME = 2000 // 2 seconds debounce
 
   // Calculate responsive QR box size
@@ -24,6 +26,81 @@ function App() {
     // Use 80% of screen width, but max 300px and min 200px
     const size = Math.min(Math.max(minDimension * 0.8, 200), 300)
     return { width: size, height: size }
+  }
+
+  // Audio context ref (needs to be created after user interaction)
+  const audioContextRef = useRef(null)
+
+  // Initialize audio context (must be called after user interaction)
+  const initAudioContext = () => {
+    if (!audioContextRef.current) {
+      try {
+        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      } catch (err) {
+        console.log("Audio context not available:", err)
+      }
+    }
+    // Resume if suspended (some browsers suspend on page load)
+    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume()
+    }
+  }
+
+  // Play sound feedback
+  const playSound = (type) => {
+    try {
+      initAudioContext()
+      if (!audioContextRef.current) return
+
+      const audioContext = audioContextRef.current
+      const oscillator = audioContext.createOscillator()
+      const gainNode = audioContext.createGain()
+
+      oscillator.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+
+      if (type === 'success') {
+        // Success sound: two beeps (higher pitch)
+        oscillator.frequency.setValueAtTime(800, audioContext.currentTime)
+        oscillator.frequency.setValueAtTime(1000, audioContext.currentTime + 0.1)
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2)
+        oscillator.start(audioContext.currentTime)
+        oscillator.stop(audioContext.currentTime + 0.2)
+      } else if (type === 'error') {
+        // Error sound: lower beep
+        oscillator.frequency.setValueAtTime(400, audioContext.currentTime)
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3)
+        oscillator.start(audioContext.currentTime)
+        oscillator.stop(audioContext.currentTime + 0.3)
+      }
+    } catch (err) {
+      console.log("Sound not available:", err)
+    }
+  }
+
+  // Vibrate device (mobile)
+  const vibrate = (pattern) => {
+    try {
+      if (navigator.vibrate) {
+        navigator.vibrate(pattern)
+      }
+    } catch (err) {
+      console.log("Vibration not available:", err)
+    }
+  }
+
+  // Trigger success feedback
+  const triggerSuccessFeedback = () => {
+    playSound('success')
+    vibrate([100, 50, 100]) // Short vibration pattern
+  }
+
+  // Trigger error/duplicate feedback
+  const triggerErrorFeedback = () => {
+    playSound('error')
+    vibrate([200, 100, 200]) // Longer vibration pattern for error
   }
 
   // Check if we're in a secure context (HTTPS or localhost)
@@ -71,6 +148,9 @@ function App() {
       stream.getTracks().forEach(track => track.stop())
       setPermissionStatus('granted')
       console.log("Camera permission granted")
+      
+      // Initialize audio context after user interaction
+      initAudioContext()
       
       // Now start the actual scanner
       await startScanner()
@@ -199,24 +279,49 @@ function App() {
     // Update last scan
     lastScanRef.current = { code: decodedText, timestamp: now }
 
-    // Process the scan
-    setScannedData({
-      text: decodedText,
-      timestamp: new Date().toLocaleTimeString(),
-      raw: decodedResult
-    })
+    // Check if QR code was already scanned
+    const isDuplicate = scannedCodesRef.current.has(decodedText)
 
-    // Add to history
-    setScanHistory(prev => [
-      { text: decodedText, timestamp: new Date().toLocaleTimeString() },
-      ...prev.slice(0, 9) // Keep last 10 scans
-    ])
+    if (isDuplicate) {
+      // Already scanned - show duplicate message
+      setScanStatus('duplicate')
+      setScannedData({
+        text: decodedText,
+        timestamp: new Date().toLocaleTimeString(),
+        raw: decodedResult,
+        isDuplicate: true
+      })
+      triggerErrorFeedback()
+      
+      // Auto-reset after showing duplicate message
+      setTimeout(() => {
+        setScannedData(null)
+        setScanStatus(null)
+      }, 2000) // Show duplicate message for 2 seconds
+    } else {
+      // New scan - add to scanned codes and process
+      scannedCodesRef.current.add(decodedText)
+      setScanStatus('success')
+      setScannedData({
+        text: decodedText,
+        timestamp: new Date().toLocaleTimeString(),
+        raw: decodedResult,
+        isDuplicate: false
+      })
+      triggerSuccessFeedback()
 
-    // Auto-reset after showing result (for continuous scanning)
-    setTimeout(() => {
-      // Scanner continues automatically, just clear the displayed result
-      setScannedData(null)
-    }, 1500) // Show result for 1.5 seconds then clear
+      // Add to history
+      setScanHistory(prev => [
+        { text: decodedText, timestamp: new Date().toLocaleTimeString(), isDuplicate: false },
+        ...prev.slice(0, 9) // Keep last 10 scans
+      ])
+
+      // Auto-reset after showing result (for continuous scanning)
+      setTimeout(() => {
+        setScannedData(null)
+        setScanStatus(null)
+      }, 2000) // Show success message for 2 seconds
+    }
   }
 
   // Check secure context and permission status on mount
@@ -369,16 +474,30 @@ function App() {
       </div>
 
       {scannedData && (
-        <div className="scan-result">
+        <div className={`scan-result ${scannedData.isDuplicate ? 'scan-result-duplicate' : 'scan-result-success'}`}>
           <div className="result-header">
-            <span className="success-icon">✓</span>
-            <h2>Ticket Scanned</h2>
+            {scannedData.isDuplicate ? (
+              <>
+                <span className="error-icon">⚠</span>
+                <h2>Already Scanned</h2>
+              </>
+            ) : (
+              <>
+                <span className="success-icon">✓</span>
+                <h2>Ticket Scanned</h2>
+              </>
+            )}
           </div>
           <div className="result-content">
             <div className="result-item">
               <label>QR Code:</label>
               <p className="qr-text">{scannedData.text}</p>
             </div>
+            {scannedData.isDuplicate && (
+              <div className="duplicate-warning">
+                <p>This ticket was already scanned before.</p>
+              </div>
+            )}
             <div className="result-item">
               <label>Time:</label>
               <p>{scannedData.timestamp}</p>
@@ -404,9 +523,10 @@ function App() {
           <h3>Recent Scans ({scanHistory.length})</h3>
           <div className="history-list">
             {scanHistory.map((scan, index) => (
-              <div key={index} className="history-item">
+              <div key={index} className={`history-item ${scan.isDuplicate ? 'history-duplicate' : ''}`}>
                 <span className="history-time">{scan.timestamp}</span>
                 <span className="history-code">{scan.text.substring(0, 30)}...</span>
+                {scan.isDuplicate && <span className="history-badge">Duplicate</span>}
               </div>
             ))}
           </div>
